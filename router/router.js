@@ -3,55 +3,71 @@ const router = express.Router();
 import puppeteer from 'puppeteer';
 
 const automation = async (hsncode) => {
-    const browser = await puppeteer.launch({ headless: true, defaultViewport: null });
+
+    const browser = await puppeteer.launch({ 
+        headless: true, 
+        defaultViewport: null,
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+    
     const page = await browser.newPage();
     
     try {
-        // Navigate to the GST rates page
         await page.goto('https://cbic-gst.gov.in/gst-goods-services-rates.html', {
-            waitUntil: 'networkidle2'
+            waitUntil: 'networkidle2',
+            timeout: 50000
         });
 
-        // Find the search input and button
-        const formControl = await page.$('#chapter');
-        const searchBtn = await page.$('i.fa.fa-search');
+        const getformcontrooler = await page.$('.form-control')
+    const serchbtn = await page.$('i.fa-search');
 
-        if (!formControl || !searchBtn) {
-            throw new Error("Search elements not found on page");
+        if (!serchbtn) {
+            console.log("Search button not found");
         }
 
-        // Enter HSN code and click search
-        await formControl.type(hsncode);
-        await searchBtn.click();
-
-        // Wait for table results to load
+    await   getformcontrooler.type(hsncode);
+    await   serchbtn.click();
+      
+        await page.waitForSelector('#goods_table');
         
-        // Extract table data
-        const tableData = await page.evaluate(() => {
+        const tableData = await page.evaluate((hsn) => {
             const table = document.querySelector('#goods_table');
-            if (!table) return [];
+            if (!table || !table.querySelector('tbody')) return [];
 
             const rows = table.querySelectorAll('tbody tr');
             const result = [];
-
+            
+            const normalizedHsn = hsn.replace(/[^0-9]/g, '');
+            
             rows.forEach(row => {
                 const columns = row.querySelectorAll('td');
                 if (columns.length >= 5) {
-                    result.push({
-                        schedules: columns[0].textContent.trim(),
-                        slNo: columns[1].textContent.trim(),
-                        chapterHeading: columns[2].textContent.trim(),
-                        description: columns[3].textContent.trim(),
-                        cgstRate: columns[4].textContent.trim(),
-                        sgstUtgstRate: columns[5].textContent.trim(),
-                        igstRate: columns[6].textContent.trim(),
-                        cessRate: columns[7] ? columns[7].textContent.trim() : ''
+                    const chapterText = columns[2].textContent.trim();
+                    const hsnCodesInCell = chapterText
+                        .split(/,|\n/)
+                        .map(code => code.trim().replace(/[^0-9]/g, ''))
+                        .filter(code => code.length > 0);
+                    const matchFound = hsnCodesInCell.some(code => {
+                        return code === normalizedHsn || code.includes(normalizedHsn);
                     });
+                    
+                    if (matchFound) {
+                        result.push({
+                            schedules: columns[0].textContent.trim(),
+                            slNo: columns[1].textContent.trim(),
+                            chapterHeading: chapterText,
+                            description: columns[3].textContent.trim(),
+                            cgstRate: columns[4].textContent.trim(),
+                            sgstUtgstRate: columns[5].textContent.trim(),
+                            igstRate: columns[6].textContent.trim(),
+                            cessRate: columns[7] ? columns[7].textContent.trim() : ''
+                        });
+                    }
                 }
             });
 
             return result;
-        });
+        }, hsncode);
 
         await browser.close();
         return tableData;
@@ -83,9 +99,18 @@ router.post("/getdata", async (req, res) => {
         
         const tableData = await automation(data);
         
+        if (tableData.length === 0) {
+            return res.json({
+                success: true,
+                message: `No data found for HSN code: ${data}`,
+                count: 0,
+                data: []
+            });
+        }
+        
         return res.json({
             success: true,
-            message: "Data fetched successfully",
+            message: `Found ${tableData.length} entries for HSN code: ${data}`,
             count: tableData.length,
             data: tableData
         });
